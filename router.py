@@ -20,6 +20,7 @@ from .service import (
     create_estimate,
     get_estimate_detail,
     get_history,
+    get_history_details,
     list_estimates,
     list_years,
     update_business_state,
@@ -55,6 +56,18 @@ def api_list(
 ):
     return list_estimates(db, year=year, department_id=department_id, business_state=status, q=q)
 
+
+
+
+@router.get("/{estimate_id}/history-details", response_model=List[EstimateDetailOut])
+def api_history_details(
+    estimate_id: int,
+    limit: int = Query(default=10, ge=1, le=10),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 모든 로그인 사용자에게 동일하게 제공(권한 제한 없음)
+    return get_history_details(db, estimate_id, limit=limit)
 
 @router.post("", response_model=dict)
 def api_create(

@@ -723,6 +723,150 @@ def update_business_state(db: Session, estimate_id: int, business_state: str) ->
     return {"ok": True, "business_state": business_state}
 
 
+
+
+def get_estimate_detail_by_revision(db: Session, estimate_id: int, revision_id: int) -> EstimateDetailOut:
+    """
+    특정 revision_id 기준으로 견적서 상세(섹션/라인 포함) 구성.
+    - 권한/가시성 제한은 두지 않고, 데이터만 반환(프론트에서 '구버전 표시' 용도)
+    """
+    e = _get_estimate(db, estimate_id)
+    r = _get_revision(db, int(revision_id))
+
+    sections = db.execute(
+        text(
+            """
+            SELECT id, revision_id, section_type, section_order, title, subtotal
+            FROM estimate_sections
+            WHERE revision_id = :rid
+            ORDER BY section_order ASC
+            """
+        ),
+        {"rid": int(revision_id)},
+    ).mappings().all()
+
+    lines = db.execute(
+        text(
+            """
+            SELECT
+              id,
+              section_id,
+              COALESCE(line_order, line_no) AS line_order,
+              item_name_snapshot AS name,
+              spec_snapshot AS spec,
+              unit_snapshot AS unit,
+              qty,
+              unit_price_snapshot AS unit_price,
+              line_total AS amount,
+              memo AS remark,
+              calc_mode,
+              base_section_type,
+              formula,
+              product_id,
+              price_type
+            FROM estimate_items
+            WHERE revision_id = :rid
+            ORDER BY section_id ASC, COALESCE(line_order, line_no) ASC, id ASC
+            """
+        ),
+        {"rid": int(revision_id)},
+    ).mappings().all()
+
+    sec_map: Dict[int, List[Dict[str, Any]]] = {}
+    for ln in lines:
+        sid = int(ln["section_id"]) if ln.get("section_id") is not None else 0
+        sec_map.setdefault(sid, []).append(dict(ln))
+
+    out_sections = []
+    for s in sections:
+        sid = int(s["id"])
+        out_lines = []
+        for ln in sec_map.get(sid, []):
+            out_lines.append(
+                {
+                    "id": int(ln["id"]),
+                    "line_order": int(ln["line_order"] or 1),
+                    "name": ln["name"],
+                    "spec": ln.get("spec"),
+                    "unit": ln.get("unit") or "EA",
+                    "qty": _money(ln.get("qty")),
+                    "unit_price": _money(ln.get("unit_price")) if ln.get("unit_price") is not None else None,
+                    "amount": _money(ln.get("amount")),
+                    "remark": ln.get("remark"),
+                    "calc_mode": str(ln.get("calc_mode") or "NORMAL"),
+                    "base_section_type": ln.get("base_section_type"),
+                    "formula": ln.get("formula"),
+                    "source_type": "PRODUCT" if ln.get("product_id") else "NONE",
+                    "source_id": _safe_int(ln.get("product_id")),
+                    "price_type": ln.get("price_type"),
+                }
+            )
+
+        out_sections.append(
+            {
+                "id": sid,
+                "section_order": int(s.get("section_order") or 1),
+                "section_type": s.get("section_type"),
+                "title": s.get("title"),
+                "subtotal": _money(s.get("subtotal")),
+                "lines": out_lines,
+            }
+        )
+
+    return EstimateDetailOut(
+        id=int(e["id"]),
+        estimate_no=e["estimate_no"],
+        business_state=str(e.get("business_state") or "ONGOING"),
+        project_id=_safe_int(e.get("project_id")),
+        project_name=e.get("project_name"),
+        receiver_name=e.get("receiver_name"),
+        title=e.get("title"),
+        memo=e.get("memo"),
+        revision_id=int(revision_id),
+        revision_no=int(r.get("revision_no") or 1),
+        revision_status=str(r.get("status") or "DRAFT"),
+        created_at=str(r.get("created_at")),
+        author_name=r.get("author_name") or e.get("author_name"),
+        subtotal=_money(r.get("subtotal")),
+        tax=_money(r.get("tax")),
+        total=_money(r.get("total")),
+        sections=out_sections,
+    )
+
+
+def get_history_details(db: Session, estimate_id: int, limit: int = 10) -> List[EstimateDetailOut]:
+    """
+    구버전(이전 revision) 상세를 최근 N개(limit)까지 반환.
+    - 최신(current_revision_id)은 제외하고, 나머지 revision을 revision_no DESC로 가져옴
+    """
+    e = _get_estimate(db, estimate_id)
+    current_rid = _safe_int(e.get("current_revision_id"))
+
+    rows = db.execute(
+        text(
+            """
+            SELECT id AS revision_id
+            FROM estimate_revisions
+            WHERE estimate_id = :eid
+            ORDER BY revision_no DESC
+            """
+        ),
+        {"eid": estimate_id},
+    ).mappings().all()
+
+    rev_ids = [int(r["revision_id"]) for r in rows if r.get("revision_id") is not None]
+    # 최신 제외
+    if current_rid:
+        rev_ids = [rid for rid in rev_ids if rid != int(current_rid)]
+
+    rev_ids = rev_ids[: max(0, int(limit or 10))]
+
+    out: List[EstimateDetailOut] = []
+    for rid in rev_ids:
+        out.append(get_estimate_detail_by_revision(db, estimate_id, rid))
+    return out
+
+
 def get_history(db: Session, estimate_id: int) -> List[EstimateHistoryItemOut]:
     _get_estimate(db, estimate_id)
     rows = db.execute(
