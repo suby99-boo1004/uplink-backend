@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.orm import Session
+
+from app.core.deps import get_db, get_current_user
+from app.models.user import User
+
+from .schema import (
+    EstimateCreateIn,
+    EstimateDetailOut,
+    EstimateHistoryItemOut,
+    EstimateListItemOut,
+    EstimateStatusUpdateIn,
+    EstimateUpdateIn,
+)
+from .service import (
+    create_estimate,
+    get_estimate_detail,
+    get_history,
+    list_estimates,
+    list_years,
+    update_business_state,
+    update_estimate,
+)
+
+router = APIRouter(prefix="/api/estimates", tags=["견적서"])
+
+
+@router.get("/ping")
+def ping():
+    return {"ok": True, "module": "estimates"}
+
+
+@router.get("/years")
+def api_years(
+    status: Optional[str] = Query(default=None, description="ONGOING|DONE|CANCELED"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    years = list_years(db, business_state=status)
+    return {"status": status, "years": years}
+
+
+@router.get("", response_model=List[EstimateListItemOut])
+def api_list(
+    year: Optional[int] = Query(default=None),
+    department_id: Optional[int] = Query(default=None),
+    status: Optional[str] = Query(default=None, description="ONGOING|DONE|CANCELED"),
+    q: Optional[str] = Query(default=None, description="사업명/견적번호/수신/제목 검색"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return list_estimates(db, year=year, department_id=department_id, business_state=status, q=q)
+
+
+@router.post("", response_model=dict)
+def api_create(
+    payload: EstimateCreateIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return create_estimate(db, payload, current_user)
+
+
+@router.get("/{estimate_id}", response_model=EstimateDetailOut)
+def api_detail(
+    estimate_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_estimate_detail(db, estimate_id)
+
+
+@router.put("/{estimate_id}", response_model=dict)
+def api_update(
+    estimate_id: int,
+    payload: EstimateUpdateIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return update_estimate(db, estimate_id, payload, current_user)
+
+
+@router.get("/{estimate_id}/history", response_model=List[EstimateHistoryItemOut])
+def api_history(
+    estimate_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return get_history(db, estimate_id)
+
+
+@router.post("/{estimate_id}/business-state", response_model=dict)
+def api_business_state(
+    estimate_id: int,
+    payload: EstimateStatusUpdateIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return update_business_state(db, estimate_id, payload.business_state)
